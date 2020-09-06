@@ -1,4 +1,4 @@
-fbprophet
+pmprophet >= 0.2.8
 pymc3 >=3.9.2
 pandas
 jupyterlab
@@ -10,3 +10,4 @@ mkl-service
 boto3
 paramiko
 s3fs
+

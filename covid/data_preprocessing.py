@@ -5,7 +5,7 @@ import pathlib
 import typing
 import numpy
 
-import fbprophet
+import pmprophet
 import holidays
 
 _log = logging.getLogger(__file__)
@@ -65,16 +65,16 @@ def get_holidays(
 
 
 def predict_testcounts(
-    testcounts: pandas.Series,
-    *,
-    country: str,
-    region: typing.Optional[typing.Union[str, typing.List[str]]],
-    keep_data: bool,
-    ignore_before: typing.Optional[
-        typing.Union[datetime.datetime, pandas.Timestamp, str]
-    ] = None,
-    **kwargs,
-) -> typing.Tuple[pandas.Series, fbprophet.Prophet, pandas.DataFrame]:
+        testcounts: pandas.Series,
+        *,
+        country: str,
+        region: typing.Optional[typing.Union[str, typing.List[str]]],
+        keep_data: bool,
+        ignore_before: typing.Optional[
+            typing.Union[datetime.datetime, pandas.Timestamp, str]
+        ] = None,
+        **kwargs,
+) -> typing.Tuple[pandas.Series, pmprophet.model.PMProphet, pandas.DataFrame]:
     """ Predict/smooth missing testcounts with Prophet.
 
     Parameters
@@ -94,16 +94,12 @@ def predict_testcounts(
     ignore_before : timestamp
         all dates before this are ignored
         Use this argument to prevent an unrealistic upwards trend due to initial testing ramp-up
-    **kwargs
-        optional kwargs for the `fbprophet.Prophet`. For example:
-        * growth: 'linear' or 'logistic' (default)
-        * seasonality_mode: 'additive' or 'multiplicative' (default)
-    
+
     Returns
     -------
     result : pandas.Series
         the date-indexed series of smoothed/predicted testcounts
-    m : fbprophet.Prophet
+    m : pmprophet.model.PMProphet
         the phophet model
     forecast : pandas.DataFrame
         contains the model prediction
@@ -152,39 +148,46 @@ def predict_testcounts(
 
     # Config settings of forecast model
     days = (testcounts.index[-1] - testcounts.index[0]).days
-    prophet_kwargs = dict(
-        growth="logistic",
-        seasonality_mode="multiplicative",
-        daily_seasonality=False,
-        weekly_seasonality=True,
-        yearly_seasonality=False,
-        holidays=holiday_df,
-        mcmc_samples=500,
-        # restrict number of potential changepoints:
+
+    m = pmprophet.model.PMProphet(
+        name="testcounts-model",
+        data=testcounts
+            .loc[mask_fit]
+            .reset_index()
+            .rename(columns={"date": "ds", "total": "y"}),
+        growth=True,
+        intercept=True,
         n_changepoints=int(numpy.ceil(days / 30)),
     )
-    # override defaults with user-specified kwargs
-    prophet_kwargs.update(kwargs)
-    m = fbprophet.Prophet(**prophet_kwargs)
+
+    # add holidays
+    for index, row in holiday_df.iterrows():
+        holiday_start = holiday_df['ds'].iloc[0]
+        holiday_end = holiday_start + datetime.timedelta(hours=23, minutes=59, seconds=59)
+        m.add_holiday(name=row['name'], date_start=holiday_start.to_pydatetime(), date_end=holiday_end.to_pydatetime())
+
+    # add weekly seasonality
+    m.add_seasonality(seasonality=7, fourier_order=3)
 
     # fit only the selected subset of the data
     df_fit = (
         testcounts.loc[mask_fit]
-        .reset_index()
-        .rename(columns={"date": "ds", "total": "y"})
+            .reset_index()
+            .rename(columns={"date": "ds", "total": "y"})
     )
 
-    if prophet_kwargs["growth"] == "logistic":
-        cap = numpy.max(testcounts) * 1
-        df_fit["floor"] = 0
-        df_fit["cap"] = cap
+    cap = numpy.max(testcounts) * 1
+    df_fit["floor"] = 0
+    df_fit["cap"] = cap
+    df_fit['ds'].apply(lambda x: x.to_pydatetime())
+    print(df_fit)
+    print('---')
     m.fit(df_fit)
 
     # predict for all dates in the input
     df_predict = testcounts.reset_index().rename(columns={"date": "ds"})
-    if prophet_kwargs["growth"] == "logistic":
-        df_predict["floor"] = 0
-        df_predict["cap"] = cap
+    df_predict["floor"] = 0
+    df_predict["cap"] = cap
     forecast = m.predict(df_predict)
 
     # make a series of the result that has the same index as the input
